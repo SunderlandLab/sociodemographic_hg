@@ -1,0 +1,136 @@
+---
+title: "1_PP_vulnerable)buffer"
+output: html_document
+date created: 2/17/23
+date updated: 5/26/23
+
+Purpose: Explore whether the proportion of potentially vulnerable groups within buffers surrounding power plants change at differing buffer sizes.
+---
+
+Clear environment.
+```{r}
+rm(list=ls())
+gc()
+
+```
+
+=========================================================================================================
+Load packages.
+```{r, include=FALSE}
+library(foreign)
+library(tidyverse)
+library(tidycensus)
+library(cowplot)
+
+library(sf)
+library(terra)
+library(tmap)
+
+```
+
+Load functions - change to your directory.
+```{r}
+source('f_Misc.R')
+source('f_census.R')
+
+```
+
+=========================================================================================================
+Load data - change to your directory.
+--------------------------------------
+Spatial data.
+```{r}
+## US states
+usa_shp0 <- st_read('data/States_shapefile.shp')
+
+## Census bg shp
+bg10_shp0 <- st_read('data/US_blck_grp_2010.shp')
+# Transform CRS.
+bg10_shp <- st_transform(bg10_shp0, st_crs(usa_shp0))
+
+## EGU locations
+egu_pt0 <- st_read('data/facility2020_pt.shp')
+egu_pt  <- st_transform(egu_pt0, st_crs(usa_shp0))
+
+```
+
+Census data.
+```{r}
+source('census2020.R')
+
+```
+
+=========================================================================================================
+Calculate proportion of people living in & out of buffers.
+```{r}
+source('LoadCensus.R')
+
+```
+
+=========================================================================================================
+Crop US census BG to just contiguous USA.
+```{r}
+## All states
+egu_pt7801   <- st_transform(egu_pt, crs = 7801)
+egu_pt7801   <- egu_pt7801[which(duplicated(egu_pt7801$facility_i) == F), ]
+head(egu_pt7801)
+
+```
+
+Create buffers.
+```{r}
+# Avoid error due to duplicate vertex.
+sf_use_s2(FALSE)
+
+## Save df comparing buffers (larger buffers take longer to calculate)
+# buff.sz should be in km
+buff1   <- Compare_EGU_Buffers(buff.sz = "1")
+buff1.5 <- Compare_EGU_Buffers(buff.sz = "1.5")
+buff2   <- Compare_EGU_Buffers(buff.sz = "2")
+buff3   <- Compare_EGU_Buffers(buff.sz = "3")
+buff4   <- Compare_EGU_Buffers(buff.sz = "4")
+buff5   <- Compare_EGU_Buffers(buff.sz = "5")
+buff10  <- Compare_EGU_Buffers(buff.sz = "10")
+buff15  <- Compare_EGU_Buffers(buff.sz = "15")
+buff20  <- Compare_EGU_Buffers(buff.sz = "20")
+buff25  <- Compare_EGU_Buffers(buff.sz = "25")
+buff50  <- Compare_EGU_Buffers(buff.sz = "50")
+buff75  <- Compare_EGU_Buffers(buff.sz = "75")
+buff100 <- Compare_EGU_Buffers(buff.sz = "100")
+
+allbuff <- rbind(buff1, buff1.5, buff2, buff3, buff4, buff5, buff10, buff15, buff20, buff25, buff50, buff75, buff100)
+allbuff
+
+```
+
+Plot buffers.
+```{r}
+## Entire US
+a <- PlotBuff('FISH', ej_df = fish_df, allbuff = allbuff) + lims(y = c(0.045, 0.10)) + labs(title = 'High-Frequency Fish \nConsumers')
+b <- PlotBuff('INCOME20', ej_df = income_df, allbuff = allbuff) + lims(y = c(0.16, 0.24)) + labs(title = '<$20K USD Income')
+c <- PlotBuff('POVERTY200', ej_df = poverty_df, allbuff = allbuff) + lims(y = c(0.3, 0.38)) + labs(title = 'PIR<2')
+d <- PlotBuff('NOHISCH', ej_df = nohisch_df, allbuff = allbuff) + lims(y = c(0.14, 0.19)) + labs(title = '<High School')
+e <- PlotBuff('NOENG', ej_df = noeng_df, allbuff = allbuff) + lims(y = c(0.02, 0.08)) + labs(title = 'Limited English-Speaking')
+
+a
+b
+c
+d
+e
+
+# plot_grid(a48,b48,c48,d48,e48)
+plot_grid(a,b,c,
+          d,e)
+
+```
+
+
+
+
+
+
+
+
+
+
+

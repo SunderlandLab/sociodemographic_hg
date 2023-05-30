@@ -1,0 +1,377 @@
+---
+title: "2_PP_active_retire"
+output: html_document
+date created: 1/5/23
+date updated: 5/26/23
+
+Purpose: Explore whether the proportion of potentially vulnerable groups within the buffers surrounding power plants that are still active differ from those that have been retired since 2010.
+---
+
+Clear environment.
+```{r}
+rm(list=ls())
+gc()
+
+```
+
+=========================================================================================================
+Load packages.
+```{r, include=FALSE}
+library(foreign)
+library(tidyverse)
+library(tidycensus)
+library(cowplot)
+library(spatstat)
+
+library(sf)
+library(terra)
+library(tmap)
+
+```
+
+Load functions - change to your directory.
+```{r}
+source('f_Misc.R')
+source('f_census.R')
+
+```
+
+=========================================================================================================
+Load data - change to your directory.
+--------------------------------------
+
+Spatial data.
+```{r}
+## US states
+usa_shp0 <- st_read('data/States_shapefile.shp')
+# Remove AK, HI
+usa_shp <- filter(usa_shp0, !(State_Code %in% c('AK', 'HI')))
+rm(usa_shp0)
+
+## EGU locations
+egu_pt0 <- st_read('data/facility2020_pt.shp')
+egu_pt  <- st_transform(egu_pt0, st_crs(usa_shp))
+rm(egu_pt0)
+
+## Census bg shp
+bg20_shp0 <- st_read('data/US_blck_grp_2020.shp')
+# Transform crs
+bg20_shp <- st_transform(bg20_shp0, st_crs(usa_shp))
+rm(bg20_shp0)
+
+```
+
+Load MATS data.
+```{r}
+## Boiler
+# boiler_change <- read.csv('/Users/monadai/OneDrive - Harvard University/Harvard/Sunderland/MATS/Data/FromBen/boiler_level_change_2010_2020.csv')
+# head(boiler_change)
+
+```
+
+Load buffer data.
+```{r}
+# Facility ID & census BG.
+egu_bg_0  <- read.dbf('data/facility_gisjoin5.dbf')
+egu2020_0 <- read.csv('data/facility2020_retire_0123.csv')
+
+# Load US shp.
+usa_shp0 <- st_read('data/States_shapefile.shp')
+
+```
+
+====================================================================================================================
+Calculate proportion of subgroup per census block group.
+------------------------------------------------------------------
+
+Collect correct census variables from NHGIS dataframe (see census2020.R).
+```{r}
+source('data/census2020.R')
+
+```
+
+Create new df from loaded US census data combining estimate & MOE data.
+```{r}
+# FISH
+fish_df00 <- LoadFISH(nhgisYR = nhgis2020_bg, nhgiscode_est = nhgis2020_EST, nhgiscode_moe = nhgis2020_MOE)
+fish_df0  <- LoadEJdf(fish_df00)
+
+fish_df0  <- fish_df0 %>% group_by(GISJOIN) %>% mutate(FISH = sum(AIAN, ASIAN, HIPI, MULTI))
+
+# --------------------------------------------------------------------------------------------------------------------
+# INCOME
+income_df00 <- LoadINCOME(nhgisYR = nhgis2020_bg, nhgiscode_est = nhgis2020_EST, nhgiscode_moe = nhgis2020_MOE)
+income_df0  <- LoadEJdf(income_df00)
+
+income_df0  <- income_df0 %>% group_by(GISJOIN) %>% mutate(INCOME20 = sum(L10k, L15k, L20k))
+# head(income_df0)
+
+# --------------------------------------------------------------------------------------------------------------------
+# POVERTY
+poverty_df00 <- LoadPOVERTY(nhgisYR = nhgis2020_bg, nhgiscode_est = nhgis2020_EST, nhgiscode_moe = nhgis2020_MOE)
+poverty_df0  <- LoadEJdf(poverty_df00)
+
+poverty_df0  <- poverty_df0 %>% group_by(GISJOIN) %>% 
+  mutate(POVERTY200 = sum(R0.50, R1.00, R1.25, R1.50, R1.85, R2.00))
+# head(poverty_df0)
+
+# --------------------------------------------------------------------------------------------------------------------
+# NOENG
+noeng_df00 <- LoadNOENG(nhgisYR = nhgis2020_bg, nhgiscode_est = nhgis2020_EST, nhgiscode_moe = nhgis2020_MOE)
+noeng_df0  <- LoadEJdf(noeng_df00)
+
+noeng_df0  <- noeng_df0 %>% group_by(GISJOIN) %>% 
+  mutate(NOENG = sum(Sp, Euro, Azn, Other))
+# head(noeng_df0)
+
+# --------------------------------------------------------------------------------------------------------------------
+# NOHISCH
+nohisch_df00 <- LoadNOHISCH(nhgisYR = nhgis2020_bg, nhgiscode_est = nhgis2020_EST, nhgiscode_moe = nhgis2020_MOE)
+nohisch_df0  <- LoadEJdf(nohisch_df00)
+
+nohisch_df0  <- nohisch_df0 %>% group_by(GISJOIN) %>% 
+  mutate(NOHISCH = sum(edu1, edu2, edu3, edu4, edu5,
+                     edu6, edu7, edu8, edu9,
+                     edu10, edu11, edu12, edu13, 
+                     edu14, edu15))
+# head(nohisch_df0)
+```
+
+Calculate MOE.
+```{r}
+# FISH
+fish_df <- CalcMOE(fish_df0, 'FISH', 'RACE_Tot')
+# head(fish_df)
+# summary(fish_df)
+
+income_df <- CalcMOE(income_df0, 'INCOME20', 'INCOME_Tot')
+# head(income_df)
+# summary(income_df)
+
+poverty_df <- CalcMOE(poverty_df0, 'POVERTY200', 'POVERTY_Tot')
+# head(poverty_df)
+# summary(poverty_df)
+
+noeng_df <- CalcMOE(noeng_df0, 'NOENG', 'NOENG_Tot')
+# head(noeng_df)
+# summary(noeng_df)
+
+nohisch_df <- CalcMOE(nohisch_df0, 'NOHISCH', 'NOHISCH_Tot')
+# head(nohisch_df)
+# summary(nohisch_df)
+```
+
+Join all EJ factors into 1 df.
+```{r}
+vulnerable20_tot <- left_join(fish_df0[c(1,2,4, ncol(fish_df0))], income_df0[,c(1,4, ncol(income_df0))], by = 'GISJOIN')
+vulnerable20_tot <- left_join(vulnerable20_tot, poverty_df0[,c(1,4, ncol(poverty_df0))], by = 'GISJOIN')
+vulnerable20_tot <- left_join(vulnerable20_tot, noeng_df0[,c(1,4, ncol(noeng_df0))], by = 'GISJOIN')
+vulnerable20_tot <- left_join(vulnerable20_tot, nohisch_df0[,c(1,4, ncol(nohisch_df0))], by = 'GISJOIN')
+
+head(vulnerable20_tot)
+
+```
+
+=========================================================================================================
+Clean data.
+```{r}
+# Separate col into facility ID & census BG
+egu_bg <- separate(egu_bg_0, facility_g, c('facility_id_master', 'GISJOIN'))
+# Join census BG data
+egu_bg <- left_join(egu_bg, vulnerable20_tot, by = 'GISJOIN')
+# Take out Puerto Rico facilities
+egu_bg <- filter(egu_bg, !(facility_id_master %in% c(68029, 70000, 70001, 70002, 70003)))
+egu_bg
+
+## Save 512 unique power plants.
+egu2020 <- egu2020_0 %>% dplyr::select('facility_id_master', 'Facility.Retire') %>% unique()
+# Take out Puerto Rico facilities
+egu2020 <- filter(egu2020, !(facility_id_master %in% c(68029, 70000, 70001, 70002, 70003)))
+egu2020$facility_id_master <- as.character(egu2020$facility_id_master)
+egu2020
+
+```
+
+=========================================================================================================
+Separate retired & active plants.
+
+```{r}
+# Combine census BG w/ facility status
+egu_ppl0 <- left_join(egu2020, egu_bg, by = "facility_id_master")
+egu_ppl1 <- egu_ppl0 %>% 
+  mutate(FISHppl    = FISH/RACE_Tot * POP,
+         POVERTYppl = POVERTY200/POVERTY_Tot * POP,
+         INCOMEppl  = INCOME20/INCOME_Tot * POP,
+         NOHISCHppl = NOHISCH/NOHISCH_Tot * POP,
+         NOENGppl   = NOENG/NOENG_Tot * POP)
+egu_ppl1
+
+egu_ppl2 <- egu_ppl1 %>% group_by(facility_id_master) %>%
+  mutate(FISHpct    = sum(FISHppl, na.rm = T) / sum(POP, na.rm = T, na.rm = T),
+         POVERTYpct = sum(POVERTYppl, na.rm = T) / sum(POP, na.rm = T, na.rm = T),
+         INCOMEpct  = sum(INCOMEppl, na.rm = T) / sum(POP, na.rm = T, na.rm = T),
+         NOHISCHpct = sum(NOHISCHppl, na.rm = T) / sum(POP, na.rm = T, na.rm = T),
+         NOENGpct   = sum(NOENGppl, na.rm = T) / sum(POP, na.rm = T, na.rm = T),
+               
+         POPppl     = POP %>% sum(na.rm = T)
+  )
+
+egu_ppl <- egu_ppl2  %>% 
+  distinct(facility_id_master, Facility.Retire, POPppl, 
+           FISHpct, POVERTYpct, INCOMEpct, NOHISCHpct, NOENGpct) %>%
+  dplyr::select(facility_id_master, Facility.Retire, POPppl, 
+                FISHpct, POVERTYpct, INCOMEpct, NOHISCHpct, NOENGpct)
+head(egu_ppl)
+
+# Split into active & retired plants
+egu_active <- filter(egu_ppl, Facility.Retire != "Fully.retired") %>% data.frame()
+egu_retire <- filter(egu_ppl, Facility.Retire == "Fully.retired") %>% data.frame()
+
+egu_active %>% summary()
+egu_retire %>% summary()
+
+```
+
+Perform Wilcoxon test.
+```{r}
+## Find weighted medians
+# Create empty df
+wt_med <- data.frame(matrix(nrow = 5, ncol = 2))
+wt_quant95_active <- data.frame(matrix(nrow = 5, ncol = 2))
+wt_quant95_retire <- data.frame(matrix(nrow = 5, ncol = 2))
+# Active
+for (i in 1:5){
+  wt_med[i,1] <- weighted.median(egu_active[, 3+i], w = egu_active[, 'POPppl'], na.rm = T)
+
+  wt_quant95_active[i,1] <- weighted.quantile(egu_active[, 3+i], w = egu_active[, 'POPppl'], na.rm = T, probs=0.025)
+  wt_quant95_active[i,2] <- weighted.quantile(egu_active[, 3+i], w = egu_active[, 'POPppl'], na.rm = T, probs=0.975)
+  rownames(wt_quant95_active) <- c('FISH', 'POVERTY', 'INCOME', 'NOHISCH', 'NOENG')
+}
+
+# Retired
+for (i in 1:5){
+  wt_med[i,2] <- weighted.median(egu_retire[, 3+i], w = egu_retire[, 'POPppl'], na.rm = T)
+  
+  wt_quant95_retire[i,1] <- weighted.quantile(egu_retire[, 3+i], w = egu_retire[, 'POPppl'], na.rm = T, probs=0.025)
+  wt_quant95_retire[i,2] <- weighted.quantile(egu_retire[, 3+i], w = egu_retire[, 'POPppl'], na.rm = T, probs=0.975)
+  rownames(wt_quant95_retire) <- c('FISH', 'POVERTY', 'INCOME', 'NOHISCH', 'NOENG')
+}
+# Add colnames
+colnames(wt_med) <- c('Active', 'Retired')
+
+
+# wilcox test
+AvsR_ls <- list(
+  fish    = wilcox.test(egu_active$FISHpct,    egu_retire$FISHpct,    conf.int = T),
+  poverty = wilcox.test(egu_active$POVERTYpct, egu_retire$POVERTYpct, conf.int = T),
+  income  = wilcox.test(egu_active$INCOMEpct,  egu_retire$INCOMEpct,  conf.int = T),
+  nohisch = wilcox.test(egu_active$NOHISCHpct, egu_retire$NOHISCHpct, conf.int = T),
+  noeng   = wilcox.test(egu_active$NOENGpct,   egu_retire$NOENGpct,   conf.int = T)
+)
+
+AvsR_ci <- AvsR_pval <- data.frame(
+  row.names = c('FISH', 'POVERTY', 'INCOME', 'NOHISCH', 'NOENG'),
+  Low = c(
+    AvsR_ls$fish$conf.int[1],
+    AvsR_ls$poverty$conf.int[1],
+    AvsR_ls$income$conf.int[1],
+    AvsR_ls$nohisch$conf.int[1],
+    AvsR_ls$noeng$conf.int[1]
+  ),
+  High = c(
+    AvsR_ls$fish$conf.int[2],
+    AvsR_ls$poverty$conf.int[2],
+    AvsR_ls$income$conf.int[2],
+    AvsR_ls$nohisch$conf.int[2],
+    AvsR_ls$noeng$conf.int[2]
+  )
+) 
+AvsR_ci
+
+AvsR_pval <- data.frame(FISH    = AvsR_ls$fish$p.value,
+                        POVERTY = AvsR_ls$poverty$p.value,
+                        INCOME  = AvsR_ls$income$p.value,
+                        NOHISCH = AvsR_ls$nohisch$p.value,
+                        NOENG   = AvsR_ls$noeng$p.value) %>% t()
+colnames(AvsR_pval) <- 'pval'
+
+AvsR <- cbind(wt_med, AvsR_ci, AvsR_pval)
+KnitTab(AvsR)
+
+```
+
+
+=========================================================================================================
+Look at change in subpopulations near active powerplants over multiple buffer sizes.
+```{r}
+# Take out duplicates
+egu_pt1 <- egu_pt[which(duplicated(egu_pt$facility_i) == F), ]
+
+# Active plants only
+active_pt     <- filter(egu_pt1, Facility_R != 'Fully.retired')
+# Transform EGU locations into crs with units in [m]
+active_pt7801 <- st_transform(active_pt, crs = 7801)
+active_pt7801 <- active_pt7801[which(duplicated(active_pt7801$facility_i) == F), ]
+head(active_pt7801)
+
+# Retire plants only
+retire_pt     <- filter(egu_pt1, Facility_R == 'Fully.retired')
+# Transform EGU locations into crs with units in [m]
+retire_pt7801 <- st_transform(retire_pt, crs = 7801)
+retire_pt7801 <- retire_pt7801[which(duplicated(retire_pt7801$facility_i) == F), ]
+head(retire_pt7801)
+
+```
+
+Perform buffer.
+```{r}
+sf_use_s2(FALSE)
+
+buff1   <- Compare_EGU_Buffers(buff.sz = "1", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff1.5 <- Compare_EGU_Buffers(buff.sz = "1.5", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff2   <- Compare_EGU_Buffers(buff.sz = "2", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff3   <- Compare_EGU_Buffers(buff.sz = "3", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff4   <- Compare_EGU_Buffers(buff.sz = "4", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff5   <- Compare_EGU_Buffers(buff.sz = "5", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff10  <- Compare_EGU_Buffers(buff.sz = "10", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff15  <- Compare_EGU_Buffers(buff.sz = "15", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff20  <- Compare_EGU_Buffers(buff.sz = "20", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff25  <- Compare_EGU_Buffers(buff.sz = "25", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff50  <- Compare_EGU_Buffers(buff.sz = "50", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff75  <- Compare_EGU_Buffers(buff.sz = "75", us_egu = active_pt7801, bg_shp = bg20_shp)
+buff100 <- Compare_EGU_Buffers(buff.sz = "100", us_egu = active_pt7801, bg_shp = bg20_shp)
+
+allbuff <- rbind(buff1, buff1.5, buff2, buff3, buff4, buff5, buff10, buff15, buff20, buff25, buff50, buff75, buff100)
+allbuff
+```
+
+Plot.
+```{r}
+## Entire US
+a <- PlotBuff('FISH', ej_df = fish_df, allbuff = allbuff) + lims(y = c(0.06, 0.115)) + labs(title = 'High-Frequency Fish \nConsumers')
+b <- PlotBuff('INCOME20', ej_df = income_df, allbuff = allbuff) + lims(y = c(0.14, 0.185)) + labs(title = '<$20K USD Income')
+c <- PlotBuff('POVERTY200', ej_df = poverty_df, allbuff = allbuff) + lims(y = c(0.285, 0.365)) + labs(title = 'PIR<2')
+d <- PlotBuff('NOHISCH', ej_df = nohisch_df, allbuff = allbuff) + lims(y = c(0.10, 0.14)) + labs(title = '<High School')
+e <- PlotBuff('NOENG', ej_df = noeng_df, allbuff = allbuff) + lims(y = c(0.01, 0.05)) + labs(title = 'Limited English-Speaking')
+
+a
+b
+c
+d
+e
+
+plot_grid(a,b,c,
+          d,e)
+
+```
+
+==============
+For Table 1 in paper, data concerning 5km buffers around power plants.
+```{r}
+active_buff5   <- Compare_EGU_Buffers(buff.sz = "5", us_egu = active_pt7801, bg_shp = bg20_shp)
+retire_buff5   <- Compare_EGU_Buffers(buff.sz = "5", us_egu = retire_pt7801, bg_shp = bg20_shp)
+
+active_buff5
+retire_buff5
+
+```

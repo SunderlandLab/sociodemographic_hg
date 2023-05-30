@@ -1,0 +1,378 @@
+---
+title: '3_Hg_deposition'
+date created: 1/11/23
+date updated: 5/26/23
+Purpose: Evaluate spatial clustering of Hg deposition & sociodemographic factors across the US.
+---
+Clear environment.
+```{r}
+rm(list=ls())
+gc()
+
+```
+
+=========================================================================================================
+Load libraries.
+--------------------
+```{r, include = F}
+library(tidyverse)
+library(rsample) 
+library(cowplot)
+
+library(spatstat)
+library(lmtest)
+
+# Spatial packages
+library(raster)
+library(ncdf4)
+library(sf)
+library(tmap)
+library(stars)
+
+library(spatialreg)
+library(spdep)
+
+```
+
+---------------------------------------------------------------------------------------------------------
+Functions - change to your directory.
+----------
+Spatial model functions.
+```{r}
+source('f_spatial.R')
+
+```
+
+---------------------------------------------------------------------------------------------------------
+Load data - change to your directory.
+----------------------------------------
+Deposition data.
+```{r}
+total_deposit2010_ras = stack("data/Total_2010.nc", varname = "Total_Deposition")
+total_deposit2020_ras = stack("data/Total_2020.nc", varname = "Total_Deposition")
+
+egu_deposit2010_ras = stack("data/EGU_2010.nc", varname = "EGU_total")
+egu_deposit2020_ras = stack("data/EGU_2020.nc", varname = "EGU_total")
+
+```
+
+Load US shp data.
+```{r}
+usa_shp0 <- st_read('data/States_shapefile.shp')
+us_vulnerable_shp0 <- st_read("data/us_vulnerable2020.shp")
+
+# Load 2020 vulnerable subgroups.
+vulnerable20_tot <- readRDS('data/vulnerable20_tot.RDS')
+
+```
+
+=========================================================================================================
+Create deposition rasters
+--------------------
+2010 deposition.
+```{r}
+# Find EGU attributable deposition
+egu_att_deposit2010_ras <- egu_deposit2010_ras / total_deposit2010_ras
+# Check range of attributable deposition
+cellStats(egu_att_deposit2010_ras, stat = 'range')
+cellStats(egu_att_deposit2010_ras, stat = 'mean')
+
+# Plot
+plot(egu_deposit2010_ras)
+plot(total_deposit2010_ras)
+plot(egu_att_deposit2010_ras)
+
+```
+
+2020 deposition.
+```{r}
+# Find EGU attributable deposition
+egu_att_deposit2020_ras <- egu_deposit2020_ras / total_deposit2020_ras
+# Check range of attributable deposition
+cellStats(egu_att_deposit2020_ras, stat = 'range')
+cellStats(egu_att_deposit2020_ras, stat = 'mean')
+
+# Plot
+plot(egu_deposit2020_ras)
+plot(total_deposit2020_ras)
+plot(egu_att_deposit2020_ras)
+
+```
+
+==================================================================================================================
+Find change in deposition across US between 2010-2020.
+---------------------------------------------------------------------------------------------------------
+Save contiguous USA data to transform other shp files.
+```{r}
+# Remove AK, HI
+usa_shp <- filter(usa_shp0, !(State_Code %in% c('AK', 'HI')))
+# Change crs for us_vulnerable_shp
+us_vulnerable_shp <- st_transform(us_vulnerable_shp0, crs = st_crs(usa_shp))
+
+## Replace proportions with number of ppl.
+us_vulnerable_shp <- left_join(us_vulnerable_shp[,c('GISJOIN', 'STATE')], vulnerable20_tot, by = "GISJOIN")
+head(us_vulnerable_shp)
+
+```
+
+Take out places where deposition = 0 in 2010 (can't reduce deposition if already at 0.
+```{r}
+dep10_ras <- egu_att_deposit2010_ras
+dep20_ras <- egu_att_deposit2020_ras 
+
+dep20_ras[dep10_ras[] == 0] = NA
+dep10_ras[dep10_ras[] == 0] = NA
+
+table(is.na(dep20_ras[]))
+table(is.na(dep10_ras[]))
+
+dep10_ras %>% plot()
+dep20_ras %>% plot()
+
+plot(dep10_ras, colNA="red")
+plot(dep20_ras, colNA="red")
+
+```
+
+Find change in deposition between 2010 & 2020.
+```{r}
+# Find difference in magnitude wrt 2010 deposition
+delta_deposit_ras0 <- (dep10_ras - dep20_ras)/dep10_ras
+# delta_deposit_ras0 <- (egu_direct_deposition_ras$X2010 - egu_direct_deposition_ras$X2020)/egu_direct_deposition_ras$X2010
+delta_deposit_ras  <- delta_deposit_ras0
+
+# Change coordinate ref system (crs) to plot with US
+crs(delta_deposit_ras) <- crs(usa_shp)
+
+# Get rid of extra values outside of contiguous US
+delta_deposit_mask <- mask(delta_deposit_ras, usa_shp)
+delta_deposit_mask2 <- delta_deposit_mask
+# delta_deposit_mask2[delta_deposit_mask2[] >0.9] = NA
+
+# Plot
+crop(delta_deposit_mask2, usa_shp) %>% plot()
+plot(usa_shp %>% st_geometry(), add = T)
+
+```
+
+==================================================================================================================
+Perform spatial autocorrelation - (see http://www.geo.hunter.cuny.edu/~ssun/R-Spatial/spregression.html#spatial-error-and-lag-models)
+```{r}
+## Turn delta_deposit_mask from raster into polygons
+delta_deposit_poly <- sf::as_Spatial(sf::st_as_sf(stars::st_as_stars(delta_deposit_mask), 
+                            as_points = FALSE, merge = TRUE))
+delta_deposit_sf   <- delta_deposit_poly %>% st_as_sf() %>% st_transform(st_crs(usa_shp))
+
+## Join deposition data with 2020 census BG data
+sf_use_s2(FALSE)
+# delta_vulnerable_shp <- st_join(us_vulnerable_shp, delta_deposit_sf)
+delta_vulnerable_shp <- st_join(delta_deposit_sf, us_vulnerable_shp)
+colnames(delta_vulnerable_shp)[1] <- 'deltaHg'
+
+head(delta_vulnerable_shp)
+
+```
+
+Calculate proportion of subgroups within each raster cell.
+```{r}
+## Calculate proportions.
+delta_vulnerable_shp11 <- delta_vulnerable_shp %>% 
+  mutate(FISHppl    = FISH/RACE_Tot * POP,
+         POVERTYppl = POVERTY200/POVERTY_Tot * POP,
+         INCOMEppl  = INCOME20/INCOME_Tot * POP,
+         NOHISCHppl = NOHISCH/NOHISCH_Tot * POP,
+         NOENGppl   = NOENG/NOENG_Tot * POP)
+delta_vulnerable_shp11
+
+delta_vulnerable_shp1 <- delta_vulnerable_shp11 %>% group_by(deltaHg) %>%
+  mutate(FISH       = sum(FISHppl, na.rm = T) / sum(POP, na.rm = T, na.rm = T),
+         POVERTY    = sum(POVERTYppl, na.rm = T) / sum(POP, na.rm = T, na.rm = T),
+         INCOME20   = sum(INCOMEppl, na.rm = T) / sum(POP, na.rm = T, na.rm = T),
+         NOHISCH    = sum(NOHISCHppl, na.rm = T) / sum(POP, na.rm = T, na.rm = T),
+         NOENG      = sum(NOENGppl, na.rm = T) / sum(POP, na.rm = T, na.rm = T),
+               
+         POPppl     = POP %>% sum(na.rm = T)
+  )
+```
+
+Data summary/cleaning for subgroups per raster cell.
+```{r}
+## Range of values
+range(delta_vulnerable_shp1$FISH, na.rm = T) 
+range(delta_vulnerable_shp1$POVERTY, na.rm = T)
+range(delta_vulnerable_shp1$INCOME20, na.rm = T)
+range(delta_vulnerable_shp1$NOHISCH, na.rm = T)
+range(delta_vulnerable_shp1$NOENG, na.rm = T)
+
+## How many NAs?
+filter(delta_vulnerable_shp1, is.na(FISH) == T) %>% nrow()
+filter(delta_vulnerable_shp1, is.na(POVERTY) == T) %>% nrow()
+filter(delta_vulnerable_shp1, is.na(INCOME20) == T) %>% nrow()
+filter(delta_vulnerable_shp1, is.na(NOHISCH) == T) %>% nrow()
+filter(delta_vulnerable_shp1, is.na(NOENG) == T) %>% nrow()
+
+## Save only relevant EJ factors.
+delta_vulnerable_shp2 <- delta_vulnerable_shp1 %>% dplyr::select('deltaHg', 'STATE', 
+'FISH', 'INCOME20', 'POVERTY', 'NOHISCH', 'NOENG')
+head(delta_vulnerable_shp2)
+
+## Remove duplicated values.
+delta_vulnerable_shp2 <- delta_vulnerable_shp2 %>% unique() %>% na.omit()
+
+## Save as plots.
+a <- ggplot(data = delta_vulnerable_shp2) +
+  geom_sf(aes(fill = deltaHg), color = NA) + geom_sf(data = usa_shp, alpha = 0, color = 'white') + theme_bw()
+b <- ggplot(data = delta_vulnerable_shp2) +
+  geom_sf(aes(fill = FISH), color = NA) + geom_sf(data = usa_shp, alpha = 0, color = 'white') + theme_bw()
+c <- ggplot(data = delta_vulnerable_shp2) +
+  geom_sf(aes(fill = INCOME20), color = NA) + geom_sf(data = usa_shp, alpha = 0, color = 'white') + theme_bw()
+d <- ggplot(data = delta_vulnerable_shp2) +
+  geom_sf(aes(fill = NOHISCH), color = NA) + geom_sf(data = usa_shp, alpha = 0, color = 'white') + theme_bw()
+e <- ggplot(data = delta_vulnerable_shp2) +
+  geom_sf(aes(fill = NOENG), color = NA) + geom_sf(data = usa_shp, alpha = 0, color = 'white') + theme_bw()
+
+a
+b
+c
+d
+e
+
+# plot_grid(a,b,c,d,e)
+
+```
+
+Impute values.
+```{r}
+delta_vulnerable_shp3 <- delta_vulnerable_shp2
+
+min_FISH     <- filter(delta_vulnerable_shp3, FISH > 0)$FISH %>% min(na.rm = T)
+min_POVERTY  <- filter(delta_vulnerable_shp3, POVERTY > 0)$POVERTY %>% min(na.rm = T)
+min_INCOME20 <- filter(delta_vulnerable_shp3, INCOME20 > 0)$INCOME20 %>% min(na.rm = T)
+min_NOENG    <- filter(delta_vulnerable_shp3, NOENG > 0)$NOENG %>% min(na.rm = T)
+min_NOHISCH  <- filter(delta_vulnerable_shp3, NOHISCH > 0)$NOHISCH %>% min(na.rm = T)
+
+delta_vulnerable_shp3[which(delta_vulnerable_shp3$FISH == 0), 'FISH']         <- min_FISH/2
+delta_vulnerable_shp3[which(delta_vulnerable_shp3$POVERTY == 0), 'POVERTY']   <- min_POVERTY/2
+delta_vulnerable_shp3[which(delta_vulnerable_shp3$INCOME20 == 0), 'INCOME20'] <- min_INCOME20/2
+delta_vulnerable_shp3[which(delta_vulnerable_shp3$NOENG == 0), 'NOENG']       <- min_NOENG/2
+delta_vulnerable_shp3[which(delta_vulnerable_shp3$NOHISCH == 0), 'NOHISCH']   <- min_NOHISCH/2
+
+```
+
+Plot histograms to see how many rows are imputed & assess distribution.
+```{r}
+# Raw data
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=deltaHg),  bins=50)
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=POVERTY),  bins=50)
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=FISH),     bins=50)
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=INCOME20), bins=50)
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=NOENG),    bins=50)
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=NOHISCH),  bins=50)
+
+# log(data)
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=log(deltaHg)),  bins=50)
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=log(POVERTY)),  bins=50)
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=log(FISH)),     bins=50)
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=log(INCOME20)), bins=50)
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=log(NOENG)),    bins=50)
+ggplot(delta_vulnerable_shp3) + geom_histogram(aes(x=log(NOHISCH)),  bins=50)
+
+```
+
+Transform values into normal distribution (save log()).
+```{r}
+## Create spatial lag eqn
+delta_vulnerable_shp3 <- delta_vulnerable_shp3 %>% st_as_sf() %>% mutate(
+  logHg       = log(deltaHg),
+  logPOVERTY  = log(POVERTY),
+  logFISH     = log(FISH),
+  logPOVERTY  = log(POVERTY),
+  logINCOME20 = log(INCOME20),
+  logNOHISCH  = log(NOHISCH),
+  logNOENG    = log(NOENG)
+)
+
+delta_vulnerable_shp3 <-
+  delta_vulnerable_shp3[is.finite(rowSums(delta_vulnerable_shp3[, c('logHg', 'logFISH', 'logINCOME20', 'logPOVERTY', 'logNOENG', 'logNOHISCH')] %>% st_drop_geometry())), ]
+
+delta_vulnerable_shp3
+
+```
+
+Perform spatial regression.
+```{r}
+logHg_slm <- Spmodel_log(delta_vulnerable_shp3)
+
+# Save model
+slm <- logHg_slm$slm
+# Save neighborhood matrix
+Nb  <- logHg_slm$Nb
+
+summary(slm)
+
+```
+
+Calculate coefficients.
+```{r}
+coef(slm)
+confint(slm)
+
+TabSLM(slm)
+
+```
+
+Check Moran's I - Did it get smaller?
+```{r}
+# Derive the residuals from the regression. Need to handle those missed values
+slResiduals <- rep(0, length(delta_vulnerable_shp3$deltaHg))
+resIndex    <- slm$residuals %>% names() %>% as.integer();
+slResiduals[resIndex] <- slm$residuals
+
+MoranI_orig <- Nb %>%
+  spdep::moran.test(delta_vulnerable_shp3$deltaHg, ., zero.policy = TRUE)
+
+MoranI_slm <- Nb %>%
+  spdep::moran.test(slResiduals, ., zero.policy = TRUE)
+
+MoranI_orig
+MoranI_slm
+
+```
+
+Calculate Local Indicators of Spatial Association (LISA) - Identify clusters of high or low values as well as outliers that are surrounded by opposite values.
+```{r}
+# USA
+a <- plotCOType(delta_vulnerable_shp3,
+                'deltaHg',
+                'deltaHg = (Hg2010 - Hg2020) / Hg2010') + geom_sf(data = usa_shp, alpha = 0) #+ theme(legend.position = "none")
+b <- plotCOType(delta_vulnerable_shp3,
+                'FISH', "Median High Fish Consumers") + geom_sf(data = usa_shp, alpha = 0) + theme(legend.position = "none")
+c <- plotCOType(delta_vulnerable_shp3,
+                'INCOME20', "Income <$20k") + geom_sf(data = usa_shp, alpha = 0) + theme(legend.position = "none")
+d <- plotCOType(delta_vulnerable_shp3,
+                'POVERTY', "PIR <2") + geom_sf(data = usa_shp, alpha = 0) + theme(legend.position = "none")
+e <- plotCOType(delta_vulnerable_shp3,
+                'NOHISCH', "<High School Education") + geom_sf(data = usa_shp, alpha = 0) + theme(legend.position = "none")
+f <- plotCOType(delta_vulnerable_shp3,
+                'NOENG',
+                "Limited English Speaking Household") + geom_sf(data = usa_shp, alpha = 0) + theme(legend.position = "none")
+
+a
+b
+c
+d
+e
+f
+
+# plot_grid(a,b,c,d,e,f)
+
+
+```
+
+
+
+
+
+
+
+
