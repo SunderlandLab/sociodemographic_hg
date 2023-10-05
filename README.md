@@ -58,7 +58,7 @@ Source code for the paper:
 
 ### Data
 All data files can be found on Harvard Dataverse
-(https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/9X5GEH).
+([https://doi.org/10.7910/DVN/9X5GEH](https://doi.org/10.7910/DVN/9X5GEH)).
 
 Download all files to the "data" directory to run the above scripts. 
 
