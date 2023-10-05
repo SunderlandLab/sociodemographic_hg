@@ -3,7 +3,7 @@
 Source code for the paper:
 Sociodemographic Disparities in Mercury Exposure from
 U.S. Coal-Fired Power Plants
-***[DOI: TBD](LINK TO PAPER TBD)***
+***[DOI: 10.1021/acs.estlett.3c00216](https://doi.org/10.1021/acs.estlett.3c00216)***
 
 ## Authors
 * [Mona Q. Dai](https://scholar.harvard.edu/monadai)
