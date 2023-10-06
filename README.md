@@ -1,9 +1,7 @@
 # Modeling sociodemographic factors near coal-fired power plants
 ## Introduction
 Source code for the paper:
-Sociodemographic Disparities in Mercury Exposure from
-U.S. Coal-Fired Power Plants
-***[DOI: TBD](LINK TO PAPER TBD)***
+> Dai, M. Q., Geyman, B. M., Hu, X. C., Thackray, C. P., & Sunderland E. M. (2023). Sociodemographic Disparities in Mercury Exposure from United States Coal-Fired Power Plants. *Environmental Science & Technology Letters*, 10(7), 589-595. <a href="https://doi.org/10.1021/acs.estlett.3c00216">https://doi.org/10.1021/acs.estlett.3c00216</a>
 
 ## Authors
 * [Mona Q. Dai](https://scholar.harvard.edu/monadai)
@@ -60,7 +58,7 @@ U.S. Coal-Fired Power Plants
 
 ### Data
 All data files can be found on Harvard Dataverse
-(https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/9X5GEH).
+([https://doi.org/10.7910/DVN/9X5GEH](https://doi.org/10.7910/DVN/9X5GEH)).
 
 Download all files to the "data" directory to run the above scripts. 
 
